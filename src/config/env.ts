@@ -11,6 +11,7 @@ import {
   MinLength,
   validateSync,
 } from 'class-validator';
+import { TRUST_PROXY_PATTERN } from './trust-proxy.js';
 
 const toBoolean = ({ value }: { value: unknown }) =>
   value === true || value === 'true' || value === '1';
@@ -39,11 +40,16 @@ export class Env {
   @IsString()
   CORS_ORIGINS = '';
 
-  /** Valor do `trust proxy` do Express (ex.: 1 atrás de um proxy reverso). 0 = desligado. */
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  TRUST_PROXY = 0;
+  /**
+   * De quem aceitar o X-Forwarded-For (IP real do usuário). `0` = ninguém; número =
+   * saltos de proxy; ou lista como `loopback` / `10.0.0.0/8` (veja config/trust-proxy.ts).
+   */
+  @IsString()
+  @Matches(TRUST_PROXY_PATTERN, {
+    message:
+      'TRUST_PROXY deve ser 0, um número ou uma lista como "loopback, 10.0.0.0/8"',
+  })
+  TRUST_PROXY = '0';
 
   @Transform(toBoolean)
   @IsBoolean()

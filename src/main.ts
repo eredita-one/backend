@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module.js';
 import type { Env } from './config/env.js';
 import { setupSwagger } from './config/swagger.js';
+import { parseTrustProxy } from './config/trust-proxy.js';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -23,9 +24,11 @@ async function bootstrap() {
     .filter(Boolean);
   app.enableCors({ origin: origins.length > 0 ? origins : false });
 
-  // Atrás de proxy reverso, o IP real (usado no limite de tentativas) vem do X-Forwarded-For.
-  const trustProxy = get('TRUST_PROXY');
-  if (trustProxy > 0) app.set('trust proxy', trustProxy);
+  // O front (Next) chama a API do servidor e repassa o IP de quem está no navegador no
+  // X-Forwarded-For. Sem confiar nele, todos os usuários teriam o IP do servidor do front:
+  // o limite de tentativas de login seria um só para todo mundo.
+  const trustProxy = parseTrustProxy(get('TRUST_PROXY'));
+  if (trustProxy !== false) app.set('trust proxy', trustProxy);
 
   if (swaggerEnabled) setupSwagger(app);
 
