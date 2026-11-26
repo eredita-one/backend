@@ -1,0 +1,29 @@
+# PostgreSQL para desenvolvimento e para os testes de integração.
+# No Windows sem Docker nativo, rode dentro do WSL (a porta 5432 aparece no Windows):
+#   wsl -e sh -lc "cd /mnt/c/<caminho>/api-backend && docker compose up -d"
+#
+#   DATABASE_URL="postgresql://api:api@localhost:5432/api_backend"       (desenvolvimento)
+#   TEST_DATABASE_URL="postgresql://api:api@localhost:5432/api_backend_test"  (pnpm test:int)
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: api_backend
+      POSTGRES_USER: api
+      POSTGRES_PASSWORD: api
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      # A partir do Postgres 18 a imagem guarda os dados em /var/lib/postgresql/<versão>.
+      - api-backend-postgres:/var/lib/postgresql
+      # Roda só na primeira subida (volume vazio): cria o banco dos testes de integração.
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-test-database.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api -d api_backend"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  api-backend-postgres:

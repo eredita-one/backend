@@ -1,0 +1,177 @@
+// Contexto Contas (identidade e acesso).
+//
+// Dois domínios de login, em tabelas separadas de propósito:
+//   - equipe interna (`users`): admin, consultores/associados, contábil. O acesso vem dos
+//     perfis de acesso: cada perfil pertence a um app e reúne permissões; ter algum perfil
+//     de um app é o que libera a entrada nele.
+//   - clientes (`client_accounts`): só o portal do cliente. Não existe coluna, relação ou
+//     endpoint que ligue uma conta de cliente a perfis ou apps da equipe, então um cliente
+//     não tem como "virar" admin por erro de cadastro.
+// Os tokens dos dois domínios são assinados com segredos diferentes (veja `src/config/env.ts`).
+//
+// Dados cadastrais (cliente, associado, família, dados fiscais) NÃO moram aqui: pertencem
+// aos contextos de negócio, que guardam só o id da conta.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Apps da equipe interna. Cada valor é um módulo que um usuário pode ou não acessar.
+enum StaffApp {
+  ADMIN
+  CONSULTOR
+  CONTABIL
+}
+
+enum AccountStatus {
+  ACTIVE
+  DISABLED
+}
+
+// ─── Equipe interna ────────────────────────────────────────────────────────────
+
+model User {
+  id               String             @id @default(uuid()) @db.Uuid
+  email            String             @unique @db.VarChar(254)
+  name             String             @db.VarChar(120)
+  /// Nulo enquanto o convite não foi aceito: a conta existe, mas não consegue entrar.
+  passwordHash     String?            @map("password_hash") @db.VarChar(255)
+  status           AccountStatus      @default(ACTIVE)
+  failedLoginCount Int                @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?          @map("locked_until")
+  lastLoginAt      DateTime?          @map("last_login_at")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+  accessProfiles   UserAccessProfile[]
+  refreshTokens    UserRefreshToken[]
+
+  @@map("users")
+}
+
+/// Perfil de acesso: um nome, o app a que pertence e as permissões que ele reúne.
+/// As permissões existentes são definidas no código (catálogo); aqui ficam só as escolhidas.
+model AccessProfile {
+  id          String                    @id @default(uuid()) @db.Uuid
+  app         StaffApp
+  name        String                    @db.VarChar(80)
+  description String?                   @db.VarChar(255)
+  /// Perfil do sistema (ex.: Administrador geral): não pode ser editado nem apagado.
+  isSystem    Boolean                   @default(false) @map("is_system")
+  createdAt   DateTime                  @default(now()) @map("created_at")
+  updatedAt   DateTime                  @updatedAt @map("updated_at")
+  permissions AccessProfilePermission[]
+  users       UserAccessProfile[]
+
+  @@unique([app, name])
+  @@map("access_profiles")
+}
+
+model AccessProfilePermission {
+  profileId  String        @map("profile_id") @db.Uuid
+  /// Chave do catálogo do código, ex.: `admin.clients.view`.
+  permission String        @db.VarChar(80)
+  profile    AccessProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, permission])
+  @@map("access_profile_permissions")
+}
+
+/// Perfis atribuídos a cada usuário da equipe.
+model UserAccessProfile {
+  userId    String        @map("user_id") @db.Uuid
+  profileId String        @map("profile_id") @db.Uuid
+  /// Quem concedeu (nulo quando veio do seed).
+  grantedBy String?       @map("granted_by") @db.Uuid
+  grantedAt DateTime      @default(now()) @map("granted_at")
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Restrict: perfil em uso não pode ser apagado (a regra também existe no domínio).
+  profile   AccessProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@id([userId, profileId])
+  @@index([profileId])
+  @@map("user_access_profiles")
+}
+
+/// Trilha de auditoria do contexto Contas: cada evento de domínio relevante para acesso
+/// (perfil concedido/revogado, usuário desativado, conta bloqueada...). Só cresce.
+/// Sem chave estrangeira: o registro sobrevive mesmo que a conta ou o perfil seja apagado.
+model AccessAuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  type        String   @db.VarChar(60)
+  /// Quem fez a ação; nulo quando foi o sistema (seed, sincronização, bloqueio automático).
+  actorId     String?  @map("actor_id") @db.Uuid
+  subjectType String   @map("subject_type") @db.VarChar(30)
+  subjectId   String   @map("subject_id") @db.Uuid
+  data        Json
+  occurredAt  DateTime @map("occurred_at")
+
+  @@index([subjectType, subjectId])
+  @@index([occurredAt])
+  @@map("access_audit_log")
+}
+
+/// Refresh tokens da equipe. Guardamos só o SHA-256; `familyId` agrupa as rotações de um
+/// mesmo login para revogar a sessão inteira quando um token já usado reaparece.
+model UserRefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  /// App para o qual a sessão foi aberta: o refresh só renova tokens desse app.
+  app       StaffApp
+  familyId  String    @map("family_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  userAgent String?   @map("user_agent") @db.VarChar(255)
+  ip        String?   @db.VarChar(45)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([userId])
+  @@map("user_refresh_tokens")
+}
+
+// ─── Clientes (portal do cliente) ─────────────────────────────────────────────
+
+/// Conta de acesso do cliente ao portal. O cadastro do cliente no CRM virá em outra
+/// tabela, ligada a esta por um `client_account_id` opcional (nem todo cliente tem acesso).
+model ClientAccount {
+  id               String               @id @default(uuid()) @db.Uuid
+  email            String               @unique @db.VarChar(254)
+  name             String               @db.VarChar(120)
+  /// Nulo enquanto o convite não foi aceito.
+  passwordHash     String?              @map("password_hash") @db.VarChar(255)
+  status           AccountStatus        @default(ACTIVE)
+  failedLoginCount Int                  @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?            @map("locked_until")
+  lastLoginAt      DateTime?            @map("last_login_at")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+  refreshTokens    ClientRefreshToken[]
+
+  @@map("client_accounts")
+}
+
+model ClientRefreshToken {
+  id              String        @id @default(uuid()) @db.Uuid
+  clientAccountId String        @map("client_account_id") @db.Uuid
+  familyId        String        @map("family_id") @db.Uuid
+  tokenHash       String        @unique @map("token_hash") @db.Char(64)
+  expiresAt       DateTime      @map("expires_at")
+  revokedAt       DateTime?     @map("revoked_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  userAgent       String?       @map("user_agent") @db.VarChar(255)
+  ip              String?       @db.VarChar(45)
+  clientAccount   ClientAccount @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([clientAccountId])
+  @@map("client_refresh_tokens")
+}

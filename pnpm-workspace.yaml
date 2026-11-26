@@ -1,0 +1,6 @@
+# Projeto único (não é monorepo): este arquivo existe só para as configurações do pnpm.
+allowBuilds:
+  "@prisma/engines": true # baixa o schema engine usado por `prisma migrate`
+  prisma: true
+  esbuild: true # postinstall do esbuild (usado pelo tsx): valida o binário da plataforma
+  "@scarf/scarf": false # telemetria do swagger-ui: não roda

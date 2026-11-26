@@ -1,0 +1,22 @@
+# dependências e build
+node_modules
+dist
+*.tsbuildinfo
+coverage
+
+# client gerado pelo Prisma (pnpm db:generate)
+src/generated
+
+# variáveis de ambiente: nunca versionar
+.env*
+!.env.example
+
+# logs e sistema
+*.log
+.DS_Store
+
+# IDEs
+.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
