@@ -190,8 +190,9 @@ Administrador geral (testado com requisições paralelas).
   como `verify-full` e recusa o certificado do Supabase.
 - Migrations e seed de produção a partir da sua máquina (bash):
   `pnpm db:prod:status`, `pnpm db:prod:migrate` e `pnpm db:prod:seed`
-  (`scripts/db-producao.sh`). Pedem a URL sem mostrá-la, ignoram o `.env` local e
-  confirmam o destino antes de alterar algo. O seed nunca cria contas demo.
+  (`scripts/db-producao.sh`). Leem `DATABASE_URL` e `SEED_ADMIN_*` do `.env.production`
+  (fora do git) e perguntam o que faltar; ignoram o `.env` local e confirmam o destino
+  antes de alterar algo. O seed nunca cria contas demo.
 
 ## Ainda não implementado
 
