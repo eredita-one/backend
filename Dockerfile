@@ -4,6 +4,9 @@ ARG NODE_VERSION=24
 # ─── Build ────────────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-slim AS build
 WORKDIR /app
+# O Prisma usa a OpenSSL para escolher e rodar o schema engine; a imagem slim não traz.
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g pnpm@12.4.2
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml prisma.config.ts ./
@@ -18,9 +21,14 @@ RUN pnpm build && pnpm prune --prod
 FROM node:${NODE_VERSION}-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g pnpm@12.4.2
 
-COPY --from=build --chown=node:node /app/package.json /app/pnpm-workspace.yaml /app/prisma.config.ts ./
+# O pnpm-lock.yaml vai junto: sem ele, o pnpm 12 acha que as dependências estão
+# desatualizadas e, antes de qualquer `pnpm <script>` (ex.: `pnpm db:deploy`), tenta
+# reinstalar tudo pela internet.
+COPY --from=build --chown=node:node /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/prisma.config.ts ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/prisma ./prisma

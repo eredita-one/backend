@@ -183,7 +183,11 @@ Administrador geral (testado com requisições paralelas).
 
 - `pnpm build && pnpm start:prod`. Migrations num passo separado: `pnpm db:deploy`.
 - `SWAGGER_ENABLED=false`, `TRUST_PROXY` conforme o proxy, `CORS_ORIGINS` só com os apps.
-- `Dockerfile` multi-stage incluído (ainda não testado com Docker).
+- `Dockerfile` multi-stage incluído. Na imagem, as migrations rodam com `pnpm db:deploy`
+  (o `pnpm-lock.yaml` vai junto para o pnpm não tentar reinstalar as dependências).
+- Supabase: use a URL do **Session pooler** (porta 5432) com
+  `?sslmode=require&uselibpqcompat=true`. Sem o `uselibpqcompat`, o `pg` trata `require`
+  como `verify-full` e recusa o certificado do Supabase.
 
 ## Ainda não implementado
 
