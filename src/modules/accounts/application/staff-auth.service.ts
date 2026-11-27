@@ -15,6 +15,7 @@ import {
   STAFF_REFRESH_TOKENS,
   type StaffTokenScope,
 } from '../domain/refresh-tokens.js';
+import { OwnPasswordService } from './own-password.service.js';
 import {
   type RequestMeta,
   SessionService,
@@ -43,6 +44,7 @@ export class StaffAuthService {
   constructor(
     private readonly authenticator: PasswordAuthenticator,
     private readonly sessions: SessionService,
+    private readonly ownPassword: OwnPasswordService,
     @Inject(STAFF_ACCOUNTS)
     private readonly accounts: AccountStore<StaffAccount>,
     @Inject(STAFF_REFRESH_TOKENS)
@@ -92,6 +94,24 @@ export class StaffAuthService {
 
   logout(rawToken: string): Promise<void> {
     return this.sessions.close(this.refreshTokens, rawToken);
+  }
+
+  /** A própria pessoa troca a senha; a sessão de `currentRefreshToken` continua aberta. */
+  changePassword(
+    userId: string,
+    input: {
+      currentPassword: string;
+      newPassword: string;
+      currentRefreshToken?: string;
+    },
+  ): Promise<void> {
+    return this.ownPassword.change({
+      realm: 'staff',
+      accounts: this.accounts,
+      refreshTokens: this.refreshTokens,
+      accountId: userId,
+      ...input,
+    });
   }
 }
 

@@ -15,6 +15,16 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/** Durante o bloqueio a senha nem é conferida: senão o bloqueio não impediria tentativas. */
+function assertNotLocked(account: Account, now: Date): void {
+  if (account.lockedUntil && account.lockedUntil > now) {
+    const seconds = Math.ceil(
+      (account.lockedUntil.getTime() - now.getTime()) / 1000,
+    );
+    throw AuthErrors.accountLocked(seconds);
+  }
+}
+
 type AuthenticateInput<T extends Account> = {
   realm: Realm;
   email: string;
@@ -42,14 +52,7 @@ export class PasswordAuthenticator {
   ): Promise<T> {
     const now = this.clock.now();
     const account = await store.findByEmail(normalizeEmail(input.email));
-
-    // Durante o bloqueio a senha nem é conferida: senão o bloqueio não impediria tentativas.
-    if (account?.lockedUntil && account.lockedUntil > now) {
-      const seconds = Math.ceil(
-        (account.lockedUntil.getTime() - now.getTime()) / 1000,
-      );
-      throw AuthErrors.accountLocked(seconds);
-    }
+    if (account) assertNotLocked(account, now);
 
     const valid = await this.hasher.verify(
       input.password,
@@ -67,6 +70,25 @@ export class PasswordAuthenticator {
 
     await store.recordSuccessfulLogin(account.id, now);
     return account;
+  }
+
+  /**
+   * Confere a senha atual de quem já está logado, antes de trocá-la. Mesmas regras do
+   * login: em bloqueio nem confere, e cada erro conta para o bloqueio, para que um token
+   * roubado não sirva para adivinhar a senha.
+   */
+  async confirmCurrentPassword<T extends Account>(
+    store: AccountStore<T>,
+    realm: Realm,
+    account: T,
+    password: string,
+  ): Promise<void> {
+    const now = this.clock.now();
+    assertNotLocked(account, now);
+    if (!(await this.hasher.verify(password, account.passwordHash))) {
+      await this.registerFailure(store, realm, account.id, now);
+      throw AuthErrors.currentPasswordInvalid();
+    }
   }
 
   private async registerFailure<T extends Account>(

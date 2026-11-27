@@ -12,6 +12,7 @@ import {
   type ClientTokenScope,
   type RefreshTokenStore,
 } from '../domain/refresh-tokens.js';
+import { OwnPasswordService } from './own-password.service.js';
 import {
   type RequestMeta,
   SessionService,
@@ -28,6 +29,7 @@ export class ClientAuthService {
   constructor(
     private readonly authenticator: PasswordAuthenticator,
     private readonly sessions: SessionService,
+    private readonly ownPassword: OwnPasswordService,
     @Inject(CLIENT_ACCOUNTS)
     private readonly accounts: AccountStore<ClientAccount>,
     @Inject(CLIENT_REFRESH_TOKENS)
@@ -72,6 +74,24 @@ export class ClientAuthService {
 
   logout(rawToken: string): Promise<void> {
     return this.sessions.close(this.refreshTokens, rawToken);
+  }
+
+  /** O cliente troca a própria senha; a sessão de `currentRefreshToken` continua aberta. */
+  changePassword(
+    accountId: string,
+    input: {
+      currentPassword: string;
+      newPassword: string;
+      currentRefreshToken?: string;
+    },
+  ): Promise<void> {
+    return this.ownPassword.change({
+      realm: 'client',
+      accounts: this.accounts,
+      refreshTokens: this.refreshTokens,
+      accountId,
+      ...input,
+    });
   }
 }
 

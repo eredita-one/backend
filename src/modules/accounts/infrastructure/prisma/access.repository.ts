@@ -3,6 +3,7 @@ import { PrismaService } from '../../../../common/prisma/prisma.service.js';
 import type { Prisma } from '../../../../generated/prisma/client.js';
 import type {
   AccessEvent,
+  AuditPage,
   AuditQuery,
   AuditTrail,
   RecordedAccessEvent,
@@ -69,7 +70,7 @@ const toUser = ({
   profiles: accessProfiles.map(({ profile }) => profile),
 });
 
-const toAuditRow = (event: AccessEvent) => ({
+export const toAuditRow = (event: AccessEvent) => ({
   type: event.type,
   actorId: event.actorId,
   subjectType: event.subjectType,
@@ -184,16 +185,34 @@ export class PrismaAccessRepository implements AccessRepository {
     return rows.map(toUser);
   }
 
-  async isEmailTaken(email: string) {
+  async isEmailTaken(email: string, exceptId?: string) {
     const found = await this.db.user.findUnique({
       where: { email },
       select: { id: true },
     });
-    return found !== null;
+    return found !== null && found.id !== exceptId;
   }
 
   async insertUser(user: { id: string; email: string; name: string }) {
     await this.db.user.create({ data: { ...user, passwordHash: null } });
+  }
+
+  async updateUserData(
+    userId: string,
+    data: { name?: string; email?: string },
+  ) {
+    await this.db.user.update({ where: { id: userId }, data });
+  }
+
+  async resetUserPassword(userId: string, passwordHash: string, at: Date) {
+    await this.db.user.update({
+      where: { id: userId },
+      data: { passwordHash, failedLoginCount: 0, lockedUntil: null },
+    });
+    await this.db.userRefreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: at },
+    });
   }
 
   async grantProfile(
@@ -269,20 +288,70 @@ export class PrismaAuditTrail implements AuditTrail {
     });
   }
 
-  async list({ limit, subjectId }: AuditQuery): Promise<RecordedAccessEvent[]> {
-    const rows = await this.prisma.accessAuditLog.findMany({
-      where: subjectId ? { subjectId } : {},
-      orderBy: { occurredAt: 'desc' },
-      take: limit,
-    });
-    return rows.map((row) => ({
-      id: row.id,
-      type: row.type as RecordedAccessEvent['type'],
-      actorId: row.actorId,
-      subjectType: row.subjectType as RecordedAccessEvent['subjectType'],
-      subjectId: row.subjectId,
-      data: row.data as Record<string, unknown>,
-      occurredAt: row.occurredAt,
-    }));
+  async list(query: AuditQuery): Promise<AuditPage> {
+    const where = await this.whereOf(query);
+    // Desempate pelo id: com eventos no mesmo instante, a página não repete nem pula linhas.
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.accessAuditLog.findMany({
+        where,
+        orderBy: [{ occurredAt: query.order }, { id: query.order }],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      this.prisma.accessAuditLog.count({ where }),
+    ]);
+    return {
+      total,
+      items: rows.map((row) => ({
+        id: row.id,
+        type: row.type as RecordedAccessEvent['type'],
+        actorId: row.actorId,
+        subjectType: row.subjectType as RecordedAccessEvent['subjectType'],
+        subjectId: row.subjectId,
+        data: row.data as Record<string, unknown>,
+        occurredAt: row.occurredAt,
+      })),
+    };
+  }
+
+  private async whereOf(
+    query: AuditQuery,
+  ): Promise<Prisma.AccessAuditLogWhereInput> {
+    const and: Prisma.AccessAuditLogWhereInput[] = [];
+    if (query.subjectId) and.push({ subjectId: query.subjectId });
+    if (query.personId) {
+      and.push({
+        OR: [{ actorId: query.personId }, { subjectId: query.personId }],
+      });
+    }
+    if (query.type) and.push({ type: query.type });
+    if (query.from || query.until) {
+      and.push({ occurredAt: { gte: query.from, lt: query.until } });
+    }
+    if (query.search) {
+      // A auditoria guarda só ids: a busca acha antes as contas e perfis pelo nome.
+      const ids = await this.idsMatching(query.search);
+      and.push({
+        OR: [{ actorId: { in: ids } }, { subjectId: { in: ids } }],
+      });
+    }
+    return { AND: and };
+  }
+
+  private async idsMatching(search: string): Promise<string[]> {
+    const text = { contains: search, mode: 'insensitive' } as const;
+    const byNameOrEmail = { OR: [{ name: text }, { email: text }] };
+    const [users, clients, profiles] = await Promise.all([
+      this.prisma.user.findMany({ where: byNameOrEmail, select: { id: true } }),
+      this.prisma.clientAccount.findMany({
+        where: byNameOrEmail,
+        select: { id: true },
+      }),
+      this.prisma.accessProfile.findMany({
+        where: { name: text },
+        select: { id: true },
+      }),
+    ]);
+    return [...users, ...clients, ...profiles].map(({ id }) => id);
   }
 }

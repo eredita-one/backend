@@ -18,13 +18,14 @@ import type { StaffPrincipal } from '../domain/principal.js';
 import { Can, CanAny, CurrentStaff } from './access-policy.js';
 import {
   AccessProfileDto,
-  AuditEntryDto,
+  AuditPageDto,
   AuditQueryDto,
   CreateAccessProfileDto,
   CreateStaffUserDto,
   PermissionDto,
   StaffUserDto,
   UpdateAccessProfileDto,
+  UpdateStaffUserDto,
 } from './dto/access.dto.js';
 
 /*
@@ -155,6 +156,27 @@ export class AdminStaffUsersController {
     );
   }
 
+  /**
+   * Nome, e-mail e/ou senha de outra pessoa. Senha nova encerra as sessões dela. Exige
+   * autoridade sobre todos os perfis da pessoa; a própria conta não se edita por aqui.
+   */
+  @Can('admin.access.users.manage')
+  @Patch(':id')
+  @ApiOkResponse({ type: StaffUserDto })
+  async update(
+    @CurrentStaff() actor: StaffPrincipal,
+    @Param('id', uuid) id: string,
+    @Body() dto: UpdateStaffUserDto,
+  ): Promise<StaffUserDto> {
+    return StaffUserDto.from(
+      await this.access.updateUser(actor.id, id, {
+        name: dto.name,
+        email: dto.email,
+        password: dto.password,
+      }),
+    );
+  }
+
   @CanAny(
     'admin.access.users.manage',
     'admin.access.consultor.manage',
@@ -221,13 +243,31 @@ export class AdminStaffUsersController {
 export class AdminAccessAuditController {
   constructor(private readonly access: AccessManagementService) {}
 
+  /** Paginada, da mais recente para a mais antiga (ou o contrário, com `order=asc`). */
   @Can('admin.access.audit.view')
   @Get()
-  @ApiOkResponse({ type: [AuditEntryDto] })
-  list(@Query() query: AuditQueryDto): Promise<AuditEntryDto[]> {
-    return this.access.auditLog({
-      limit: query.limit ?? 50,
+  @ApiOkResponse({ type: AuditPageDto })
+  async list(@Query() query: AuditQueryDto): Promise<AuditPageDto> {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const { items, total } = await this.access.auditLog({
+      page,
+      pageSize,
+      order: query.order ?? 'desc',
       subjectId: query.subjectId,
+      personId: query.personId,
+      type: query.type,
+      search: query.search,
+      from: query.from ? new Date(`${query.from}T00:00:00Z`) : undefined,
+      // `to` é o último dia, inclusive: vale até o começo do dia seguinte.
+      until: query.to ? nextDay(query.to) : undefined,
     });
+    return { items, total, page, pageSize };
   }
+}
+
+function nextDay(day: string): Date {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date;
 }

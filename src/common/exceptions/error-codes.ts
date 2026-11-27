@@ -23,6 +23,12 @@ export const ErrorCode = {
   AUTH_ACCESS_POLICY_MISSING: 'AUTH_ACCESS_POLICY_MISSING',
   /** Token válido e app certo, mas falta a permissão exigida pela rota (`details.required`). */
   AUTH_PERMISSION_DENIED: 'AUTH_PERMISSION_DENIED',
+  /** Troca da própria senha: a senha atual informada não confere. */
+  AUTH_CURRENT_PASSWORD_INVALID: 'AUTH_CURRENT_PASSWORD_INVALID',
+  /** Senha nova fora da regra (`details.minLength`, `details.maxLength`). */
+  AUTH_PASSWORD_WEAK: 'AUTH_PASSWORD_WEAK',
+  /** Senha nova igual à atual. */
+  AUTH_PASSWORD_UNCHANGED: 'AUTH_PASSWORD_UNCHANGED',
 
   // Gestão de acessos (perfis e usuários da equipe)
   ACCESS_PROFILE_NOT_FOUND: 'ACCESS_PROFILE_NOT_FOUND',

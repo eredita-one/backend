@@ -391,17 +391,22 @@ describe('Gestão de acessos (perfis e permissões)', () => {
         .expect(200);
 
       const res = await as(adminToken)
-        .get(`/admin/access-audit?subjectId=${accounts.consultor.id}&limit=10`)
+        .get(`/admin/access-audit?subjectId=${accounts.consultor.id}`)
         .expect(200);
-      expect(res.body).toMatchObject([
-        {
-          type: 'AccessProfileGranted',
-          actorId: accounts.admin.id,
-          subjectType: 'staff_user',
-          subjectId: accounts.consultor.id,
-          data: { profileName: 'Operações', app: 'ADMIN' },
-        },
-      ]);
+      expect(res.body).toMatchObject({
+        total: 1,
+        page: 1,
+        pageSize: 25,
+        items: [
+          {
+            type: 'AccessProfileGranted',
+            actorId: accounts.admin.id,
+            subjectType: 'staff_user',
+            subjectId: accounts.consultor.id,
+            data: { profileName: 'Operações', app: 'ADMIN' },
+          },
+        ],
+      });
 
       const gestora = await staffToken(t, 'gestora@eredita.test', 'ADMIN');
       await as(gestora).get('/admin/access-audit').expect(403);

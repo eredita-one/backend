@@ -9,7 +9,7 @@ exceções, Swagger, Docker), reescrita sem o domínio de pedidos/cobrança.
 ## Contexto Contas (identidade e acesso)
 
 Hoje a API tem um contexto delimitado: **Contas** (`src/modules/accounts`). Ele responde
-*quem é* e *o que pode fazer*. Os dados cadastrais (cliente, associado, família, dados
+_quem é_ e _o que pode fazer_. Os dados cadastrais (cliente, associado, família, dados
 fiscais) pertencem aos contextos de negócio, que guardam só o id da conta.
 
 ```
@@ -49,7 +49,7 @@ auditoria ─────── access_audit_log
   Ao subir, a API o sincroniza com o catálogo (permissão nova já nasce com ele).
 - Regras (em `domain/access/access-policy.ts`, cobertas por testes):
   1. **Ninguém concede o que não tem.** Mexer num perfil do admin exige a permissão de
-     gestão *e* todas as permissões do perfil. Perfis do consultor e do contábil pedem a
+     gestão _e_ todas as permissões do perfil. Perfis do consultor e do contábil pedem a
      permissão de gestão daquele app (`admin.access.consultor.manage` /
      `admin.access.contabil.manage`).
   2. **Ninguém altera o próprio acesso** (perfis ou status).
@@ -115,24 +115,59 @@ o portal do cliente é outro domínio e nunca aceita conta da equipe.
 
 ## Endpoints
 
-| Método | Rota | Acesso |
-|---|---|---|
-| POST | `/auth/staff/login` · `/refresh` · `/logout` | público (limite por IP) |
-| GET | `/auth/staff/me` | qualquer app da equipe; devolve as permissões do app atual |
-| POST | `/auth/client/login` · `/refresh` · `/logout` | público (limite por IP) |
-| GET | `/auth/client/me` | portal do cliente |
-| GET | `/admin/permissions` | alguma permissão de gestão de acessos |
-| GET, POST | `/admin/access-profiles` | gestão de perfis (do app correspondente) |
-| PATCH, DELETE | `/admin/access-profiles/:id` | idem |
-| GET, POST | `/admin/staff-users` | listar: gestão; criar: `admin.access.users.manage` |
-| GET | `/admin/staff-users/:id` | gestão |
-| PUT, DELETE | `/admin/staff-users/:id/access-profiles/:profileId` | conceder/revogar perfil |
-| POST | `/admin/staff-users/:id/disable` · `/enable` | `admin.access.users.manage` |
-| GET | `/admin/access-audit?subjectId=&limit=` | `admin.access.audit.view` |
-| GET | `/health` | público |
+| Método        | Rota                                                | Acesso                                                               |
+| ------------- | --------------------------------------------------- | -------------------------------------------------------------------- |
+| POST          | `/auth/staff/login` · `/refresh` · `/logout`        | público (limite por IP)                                              |
+| GET           | `/auth/staff/me`                                    | qualquer app da equipe; devolve as permissões do app atual           |
+| POST          | `/auth/staff/password`                              | qualquer app da equipe (limite por IP): troca a própria senha        |
+| POST          | `/auth/client/login` · `/refresh` · `/logout`       | público (limite por IP)                                              |
+| GET           | `/auth/client/me`                                   | portal do cliente                                                    |
+| POST          | `/auth/client/password`                             | portal do cliente (limite por IP): troca a própria senha             |
+| GET           | `/admin/permissions`                                | alguma permissão de gestão de acessos                                |
+| GET, POST     | `/admin/access-profiles`                            | gestão de perfis (do app correspondente)                             |
+| PATCH, DELETE | `/admin/access-profiles/:id`                        | idem                                                                 |
+| GET, POST     | `/admin/staff-users`                                | listar: gestão; criar: `admin.access.users.manage`                   |
+| GET           | `/admin/staff-users/:id`                            | gestão                                                               |
+| PATCH         | `/admin/staff-users/:id`                            | `admin.access.users.manage`: nome, e-mail e/ou senha de outra pessoa |
+| PUT, DELETE   | `/admin/staff-users/:id/access-profiles/:profileId` | conceder/revogar perfil                                              |
+| POST          | `/admin/staff-users/:id/disable` · `/enable`        | `admin.access.users.manage`                                          |
+| GET           | `/admin/access-audit` (paginada; veja abaixo)       | `admin.access.audit.view`                                            |
+| GET           | `/health`                                           | público                                                              |
+
+### Auditoria paginada
+
+`GET /admin/access-audit` devolve `{ items, total, page, pageSize }`, do evento mais
+recente para o mais antigo. Parâmetros (todos opcionais):
+
+- `page` (desde 1) e `pageSize` (25 por padrão, até 100); `order=asc` inverte a ordem.
+- `type`: um tipo de evento (`StaffUserCreated`, `PasswordChanged`...).
+- `personId`: eventos em que a pessoa aparece, como quem fez **ou** sobre quem.
+- `subjectId`: só eventos sobre aquele usuário, cliente ou perfil.
+- `search`: nome ou e-mail de quem fez ou sobre quem (equipe e clientes), ou nome do perfil;
+  sem diferenciar maiúsculas (acentos contam).
+- `from` / `to`: período em dias `AAAA-MM-DD` (UTC), `to` inclusivo.
+
+Eventos no mesmo instante são desempatados pelo id, para as páginas não repetirem nem
+pularem linhas.
 
 Usuário criado pelo admin nasce **com convite pendente** (sem senha): ainda não consegue
-entrar. O envio e o aceite do convite são a próxima etapa.
+entrar. O envio e o aceite do convite são a próxima etapa; até lá, o admin pode definir a
+senha da pessoa (`PATCH /admin/staff-users/:id`).
+
+### Senhas
+
+- Regra de senha nova: de 6 a 128 caracteres (`domain/password-policy.ts`), sem regra de
+  símbolos (NIST 800-63B). Erro: `AUTH_PASSWORD_WEAK`, com `details.minLength`/`maxLength`.
+- **Admin define a senha de outra pessoa**: mesmas regras de ativar/desativar (gestão de
+  usuários, autoridade sobre todos os perfis dela, nunca a própria conta). Encerra todas as
+  sessões da pessoa, tira o bloqueio por tentativas e grava `StaffUserPasswordReset` na
+  mesma transação. Nome/e-mail alterados gravam `StaffUserUpdated` (de → para).
+- **A pessoa troca a própria senha** (`/auth/{staff,client}/password`): exige a senha atual
+  (`AUTH_CURRENT_PASSWORD_INVALID`); erros contam para o bloqueio, como no login. Senha
+  igual à atual: `AUTH_PASSWORD_UNCHANGED`. A sessão do `refreshToken` enviado continua; as
+  outras caem. Hash, sessões e o evento `PasswordChanged` são gravados numa transação.
+- O access token já emitido (15 min) continua válido até expirar: a troca encerra as
+  sessões (refresh tokens), não os access tokens em uso.
 
 ### Sessão
 
@@ -148,21 +183,21 @@ entrar. O envio e o aceite do convite são a próxima etapa.
 Formato: `{ statusCode, code, message, details? }`. O front traduz pelo `code`
 (lista completa em `src/common/exceptions/error-codes.ts`).
 
-| code | status | quando |
-|---|---|---|
-| `AUTH_INVALID_CREDENTIALS` | 401 | e-mail inexistente, senha errada ou convite não aceito |
-| `AUTH_APP_FORBIDDEN` | 403 | sem perfil no app pedido / token de outro app |
-| `AUTH_PERMISSION_DENIED` | 403 | falta permissão da rota (`details.required`) |
-| `AUTH_ACCOUNT_LOCKED` | 429 | muitas falhas; `details.retryAfterSeconds` |
-| `AUTH_ACCOUNT_DISABLED` | 403 | conta desativada |
-| `AUTH_TOKEN_MISSING` / `AUTH_TOKEN_INVALID` | 401 | sem token / inválido, expirado ou revogado |
-| `AUTH_REFRESH_INVALID` | 401 | refresh inválido, expirado, revogado ou reutilizado |
-| `ACCESS_ESCALATION_DENIED` | 403 | conceder/editar o que não tem (`details.missing`) |
-| `ACCESS_SELF_CHANGE_DENIED` | 403 | mexer no próprio acesso |
-| `ACCESS_LAST_GENERAL_ADMIN` | 409 | ficaria sem Administrador geral |
-| `ACCESS_UNKNOWN_PERMISSION` | 422 | permissão fora do catálogo do app |
-| `ACCESS_PROFILE_IN_USE` · `…_NAME_TAKEN` · `…_SYSTEM_PROFILE_READONLY` · `STAFF_USER_EMAIL_TAKEN` | 409 | conflitos |
-| `VALIDATION_FAILED` | 400 | `details: [{ field, constraints }]` |
+| code                                                                                              | status | quando                                                 |
+| ------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
+| `AUTH_INVALID_CREDENTIALS`                                                                        | 401    | e-mail inexistente, senha errada ou convite não aceito |
+| `AUTH_APP_FORBIDDEN`                                                                              | 403    | sem perfil no app pedido / token de outro app          |
+| `AUTH_PERMISSION_DENIED`                                                                          | 403    | falta permissão da rota (`details.required`)           |
+| `AUTH_ACCOUNT_LOCKED`                                                                             | 429    | muitas falhas; `details.retryAfterSeconds`             |
+| `AUTH_ACCOUNT_DISABLED`                                                                           | 403    | conta desativada                                       |
+| `AUTH_TOKEN_MISSING` / `AUTH_TOKEN_INVALID`                                                       | 401    | sem token / inválido, expirado ou revogado             |
+| `AUTH_REFRESH_INVALID`                                                                            | 401    | refresh inválido, expirado, revogado ou reutilizado    |
+| `ACCESS_ESCALATION_DENIED`                                                                        | 403    | conceder/editar o que não tem (`details.missing`)      |
+| `ACCESS_SELF_CHANGE_DENIED`                                                                       | 403    | mexer no próprio acesso                                |
+| `ACCESS_LAST_GENERAL_ADMIN`                                                                       | 409    | ficaria sem Administrador geral                        |
+| `ACCESS_UNKNOWN_PERMISSION`                                                                       | 422    | permissão fora do catálogo do app                      |
+| `ACCESS_PROFILE_IN_USE` · `…_NAME_TAKEN` · `…_SYSTEM_PROFILE_READONLY` · `STAFF_USER_EMAIL_TAKEN` | 409    | conflitos                                              |
+| `VALIDATION_FAILED`                                                                               | 400    | `details: [{ field, constraints }]`                    |
 
 ## Testes
 

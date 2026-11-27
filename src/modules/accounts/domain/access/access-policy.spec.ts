@@ -9,6 +9,7 @@ import {
   planRevoke,
   planStatusChange,
   planUserCreation,
+  planUserUpdate,
 } from './access-policy.js';
 import { type AccessProfile, generalAdminProfile } from './access-profile.js';
 import type { StaffUser } from './staff-user.js';
@@ -221,6 +222,87 @@ describe('Política de acesso', () => {
       ).toMatchObject([
         { type: 'StaffUserDisabled', actorId: 'admin', subjectId: 'u1' },
       ]);
+    });
+  });
+
+  describe('editar dados e senha de um usuário', () => {
+    const changes = { name: 'Novo Nome', email: 'novo@eredita.test' };
+
+    it('não edita quem tem mais poder (nem define a senha dele)', () => {
+      const boss = user({ profiles: [ref(generalAdmin)] });
+      expect(
+        details(() =>
+          planUserUpdate(
+            usersManager,
+            boss,
+            [generalAdmin],
+            { passwordReset: true },
+            now,
+          ),
+        ),
+      ).toMatchObject({
+        missing: expect.arrayContaining(['admin.commissions.view']),
+      });
+    });
+
+    it('exige gestão de usuários (gestão de outro app não basta)', () => {
+      expect(
+        outcome(() => planUserUpdate(networkManager, user(), [], changes, now)),
+      ).toBe('ACCESS_ESCALATION_DENIED');
+    });
+
+    it('não edita a própria conta por aqui', () => {
+      expect(
+        outcome(() =>
+          planUserUpdate(superAdmin, user({ id: 'admin' }), [], changes, now),
+        ),
+      ).toBe('ACCESS_SELF_CHANGE_DENIED');
+    });
+
+    it('edita quem está dentro da sua autoridade e registra de → para', () => {
+      const target = user({ profiles: [ref(operations)] });
+      const plan = planUserUpdate(
+        usersManager,
+        target,
+        [operations],
+        { ...changes, passwordReset: true },
+        now,
+      );
+      expect(plan).toMatchObject({
+        name: 'Novo Nome',
+        email: 'novo@eredita.test',
+      });
+      expect(plan.events).toMatchObject([
+        {
+          type: 'StaffUserUpdated',
+          actorId: 'rh',
+          subjectId: 'u1',
+          data: {
+            name: { from: 'U1', to: 'Novo Nome' },
+            email: { from: 'u1@eredita.test', to: 'novo@eredita.test' },
+          },
+        },
+        {
+          type: 'StaffUserPasswordReset',
+          data: { sessionsRevoked: true },
+        },
+      ]);
+      // A senha em si nunca chega à auditoria.
+      expect(JSON.stringify(plan.events)).not.toContain('password"');
+    });
+
+    it('só registra o que mudou de fato', () => {
+      const plan = planUserUpdate(
+        superAdmin,
+        user(),
+        [],
+        { name: 'U1', email: 'u1@eredita.test' },
+        now,
+      );
+      expect(plan).toEqual({ name: undefined, email: undefined, events: [] });
+      expect(
+        planUserUpdate(superAdmin, user(), [], { name: 'Outro' }, now).events,
+      ).toMatchObject([{ data: { name: { from: 'U1', to: 'Outro' } } }]);
     });
   });
 

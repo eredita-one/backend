@@ -26,9 +26,24 @@ export interface AccessRepository {
 
   findUser(id: string): Promise<StaffUser | null>;
   listUsers(): Promise<StaffUser[]>;
-  isEmailTaken(email: string): Promise<boolean>;
+  /** `exceptId`: ignora a própria conta (ao trocar o e-mail dela). */
+  isEmailTaken(email: string, exceptId?: string): Promise<boolean>;
   /** Cria a conta sem senha: ela fica com convite pendente. */
   insertUser(user: { id: string; email: string; name: string }): Promise<void>;
+  /** Grava nome e/ou e-mail (campo ausente fica como está). */
+  updateUserData(
+    userId: string,
+    data: { name?: string; email?: string },
+  ): Promise<void>;
+  /**
+   * Senha definida pela gestão: grava o hash, tira o bloqueio por tentativas e encerra
+   * todas as sessões da pessoa (revoga os refresh tokens ativos).
+   */
+  resetUserPassword(
+    userId: string,
+    passwordHash: string,
+    at: Date,
+  ): Promise<void>;
   grantProfile(
     userId: string,
     profileId: string,

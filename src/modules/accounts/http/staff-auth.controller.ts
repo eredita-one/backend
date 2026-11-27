@@ -18,6 +18,7 @@ import type { StaffPrincipal } from '../domain/principal.js';
 import { CurrentStaff, ReqMeta, StaffApps } from './access-policy.js';
 import { AuthRateLimit } from './auth-rate-limit.js';
 import {
+  ChangePasswordDto,
   RefreshTokenDto,
   StaffLoginDto,
   StaffProfileDto,
@@ -70,5 +71,25 @@ export class StaffAuthController {
   @ApiOkResponse({ type: StaffProfileDto })
   me(@CurrentStaff() principal: StaffPrincipal): StaffProfileDto {
     return staffProfileFromPrincipal(principal);
+  }
+
+  /**
+   * Troca a própria senha (em qualquer app da equipe). Exige a senha atual; erros contam
+   * para o bloqueio, como no login. A sessão do `refreshToken` enviado continua aberta.
+   */
+  @StaffApps(...STAFF_APPS)
+  @AuthRateLimit()
+  @Post('password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiNoContentResponse()
+  async changePassword(
+    @CurrentStaff() principal: StaffPrincipal,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    await this.auth.changePassword(principal.id, {
+      currentPassword: dto.currentPassword,
+      newPassword: dto.newPassword,
+      currentRefreshToken: dto.refreshToken,
+    });
   }
 }

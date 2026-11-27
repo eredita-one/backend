@@ -3,6 +3,7 @@ import { PrismaService } from '../../../../common/prisma/prisma.service.js';
 import type { Prisma } from '../../../../generated/prisma/client.js';
 import type {
   AccountStore,
+  PasswordChange,
   StaffAccess,
   StaffAccount,
 } from '../../domain/accounts.js';
@@ -14,6 +15,7 @@ import type {
   RefreshTokenStore,
   StaffTokenScope,
 } from '../../domain/refresh-tokens.js';
+import { toAuditRow } from './access.repository.js';
 
 const accountSelect = {
   id: true,
@@ -92,6 +94,30 @@ export class PrismaStaffAccountStore implements AccountStore<StaffAccount> {
       where: { id },
       data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: at },
     });
+  }
+
+  async changePassword({
+    accountId,
+    passwordHash,
+    at,
+    keepSessionId,
+    event,
+  }: PasswordChange): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: accountId },
+        data: { passwordHash, failedLoginCount: 0, lockedUntil: null },
+      }),
+      this.prisma.userRefreshToken.updateMany({
+        where: {
+          userId: accountId,
+          revokedAt: null,
+          ...(keepSessionId ? { NOT: { familyId: keepSessionId } } : {}),
+        },
+        data: { revokedAt: at },
+      }),
+      this.prisma.accessAuditLog.create({ data: toAuditRow(event) }),
+    ]);
   }
 }
 

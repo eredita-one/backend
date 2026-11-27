@@ -15,6 +15,7 @@ import {
   planRevoke,
   planStatusChange,
   planUserCreation,
+  planUserUpdate,
   type ProfileChanges,
 } from '../domain/access/access-policy.js';
 import {
@@ -31,6 +32,8 @@ import type { AccountStatus } from '../domain/accounts.js';
 import type { StaffApp } from '../domain/apps.js';
 import { CLOCK, type Clock } from '../domain/clock.js';
 import { normalizeEmail } from '../domain/password-authenticator.js';
+import { PasswordHasher } from '../domain/password-hasher.js';
+import { assertPasswordPolicy } from '../domain/password-policy.js';
 import { PERMISSION_CATALOG } from '../domain/permissions.js';
 
 export type PermissionInfo = {
@@ -50,6 +53,7 @@ export class AccessManagementService {
     @Inject(ACCESS_UNIT_OF_WORK) private readonly uow: AccessUnitOfWork,
     @Inject(AUDIT_TRAIL) private readonly audit: AuditTrail,
     @Inject(CLOCK) private readonly clock: Clock,
+    private readonly hasher: PasswordHasher,
   ) {}
 
   permissionCatalog(): PermissionInfo[] {
@@ -207,6 +211,52 @@ export class AccessManagementService {
         await repo.revokeProfile(user.id, profile.id);
         await repo.appendEvents(events);
       }
+      return requireUser(repo, user.id);
+    });
+  }
+
+  /**
+   * Nome, e-mail e/ou senha de outra pessoa da equipe. Senha nova encerra todas as sessões
+   * dela; se o convite estava pendente, a conta passa a conseguir entrar.
+   */
+  async updateUser(
+    actorId: string,
+    userId: string,
+    input: { name?: string; email?: string; password?: string },
+  ) {
+    if (input.password !== undefined) assertPasswordPolicy(input.password);
+    // argon2 é lento de propósito: calcula antes de pegar a trava da gestão de acessos.
+    const passwordHash =
+      input.password !== undefined
+        ? await this.hasher.hash(input.password)
+        : undefined;
+
+    return this.uow.transaction(async (repo) => {
+      const user = await requireUser(repo, userId);
+      const now = this.clock.now();
+      const { name, email, events } = planUserUpdate(
+        await actorOf(repo, actorId),
+        user,
+        await repo.findProfiles(user.profiles.map(({ id }) => id)),
+        {
+          name: input.name,
+          email:
+            input.email === undefined ? undefined : normalizeEmail(input.email),
+          passwordReset: passwordHash !== undefined,
+        },
+        now,
+      );
+      if (email !== undefined && (await repo.isEmailTaken(email, user.id))) {
+        throw AccessErrors.emailTaken();
+      }
+
+      if (name !== undefined || email !== undefined) {
+        await repo.updateUserData(user.id, { name, email });
+      }
+      if (passwordHash !== undefined) {
+        await repo.resetUserPassword(user.id, passwordHash, now);
+      }
+      await repo.appendEvents(events);
       return requireUser(repo, user.id);
     });
   }

@@ -6,16 +6,23 @@ import {
   IsEmail,
   IsIn,
   IsInt,
+  IsISO8601,
   IsOptional,
   IsString,
   IsUUID,
   Length,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
+import { AccessEventType } from '../../domain/access/access-events.js';
 import type { StaffUser } from '../../domain/access/staff-user.js';
 import { STAFF_APPS, type StaffApp } from '../../domain/apps.js';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from '../../domain/password-policy.js';
 import { normalizeEmailInput } from './auth.dto.js';
 
 const trim = ({ value }: { value: unknown }) =>
@@ -195,21 +202,106 @@ export class CreateStaffUserDto {
   profileIds?: string[];
 }
 
+/** Só os campos enviados mudam. */
+export class UpdateStaffUserDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @Length(1, 120)
+  name?: string;
+
+  @ApiPropertyOptional({ example: 'pessoa@eredita.com' })
+  @IsOptional()
+  @Transform(normalizeEmailInput)
+  @IsEmail()
+  @MaxLength(254)
+  email?: string;
+
+  @ApiPropertyOptional({
+    description: `Senha nova, de ${PASSWORD_MIN_LENGTH} a ${PASSWORD_MAX_LENGTH} caracteres. Encerra as sessões da pessoa.`,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  password?: string;
+}
+
 // ─── Auditoria ────────────────────────────────────────────────────────────────
 
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
 export class AuditQueryDto {
-  @ApiPropertyOptional({ default: 50, maximum: 200 })
+  @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(200)
-  limit?: number;
+  page?: number;
 
-  @ApiPropertyOptional({ description: 'Só eventos deste usuário ou perfil.' })
+  @ApiPropertyOptional({ default: 25, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+
+  @ApiPropertyOptional({
+    enum: ['desc', 'asc'],
+    default: 'desc',
+    description: '`desc`: mais recentes primeiro.',
+  })
+  @IsOptional()
+  @IsIn(['desc', 'asc'])
+  order?: 'desc' | 'asc';
+
+  @ApiPropertyOptional({
+    description: 'Só eventos sobre este usuário ou perfil.',
+  })
   @IsOptional()
   @IsUUID('all')
   subjectId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Eventos em que a pessoa aparece: quem fez ou sobre quem.',
+  })
+  @IsOptional()
+  @IsUUID('all')
+  personId?: string;
+
+  @ApiPropertyOptional({ enum: Object.values(AccessEventType) })
+  @IsOptional()
+  @IsIn(Object.values(AccessEventType))
+  type?: AccessEventType;
+
+  @ApiPropertyOptional({
+    description:
+      'Nome ou e-mail de quem fez ou sobre quem, ou nome do perfil (sem diferenciar maiúsculas).',
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @Length(1, 100)
+  search?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-11-01',
+    description: 'Primeiro dia do período (UTC).',
+  })
+  @IsOptional()
+  @Matches(DAY)
+  @IsISO8601({ strict: true })
+  from?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-11-30',
+    description: 'Último dia do período, inclusive (UTC).',
+  })
+  @IsOptional()
+  @Matches(DAY)
+  @IsISO8601({ strict: true })
+  to?: string;
 }
 
 export class AuditEntryDto {
@@ -237,4 +329,20 @@ export class AuditEntryDto {
 
   @ApiProperty()
   occurredAt!: Date;
+}
+
+export class AuditPageDto {
+  @ApiProperty({ type: [AuditEntryDto] })
+  items!: AuditEntryDto[];
+
+  @ApiProperty({
+    description: 'Total de eventos com os filtros (todas as páginas).',
+  })
+  total!: number;
+
+  @ApiProperty()
+  page!: number;
+
+  @ApiProperty()
+  pageSize!: number;
 }

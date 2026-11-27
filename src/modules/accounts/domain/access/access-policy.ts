@@ -26,9 +26,9 @@ import {
  *     e de TODAS as permissões do perfil. Ninguém concede, revoga ou cria o que não tem.
  *     Perfis dos outros apps (consultor, contábil) pedem só a permissão de gestão daquele
  *     app, delegada pelo admin.
- *  2. Ninguém altera o próprio acesso (perfis ou status).
- *  3. Ninguém age sobre quem tem mais poder: ativar ou desativar uma pessoa exige
- *     autoridade sobre cada perfil dela.
+ *  2. Ninguém altera o próprio acesso (perfis, status, dados ou senha pela gestão).
+ *  3. Ninguém age sobre quem tem mais poder: ativar, desativar ou editar os dados e a
+ *     senha de uma pessoa exige autoridade sobre cada perfil dela.
  *  4. Sempre resta ao menos um Administrador geral que consegue entrar.
  *  5. Perfis do sistema não são editados nem apagados.
  */
@@ -338,6 +338,73 @@ export function planRevoke(
       now,
     ),
   ];
+}
+
+export type UserDataChanges = {
+  name?: string;
+  /** Já normalizado (minúsculas, sem espaços). */
+  email?: string;
+  /** Uma senha nova vai ser gravada (o valor nunca chega ao domínio nem à auditoria). */
+  passwordReset?: boolean;
+};
+
+/**
+ * Editar nome, e-mail ou senha de alguém da equipe. Mesmas regras de ativar/desativar:
+ * gestão de usuários, autoridade sobre cada perfil da pessoa (ninguém mexe na conta de
+ * quem tem mais poder, nem define a senha dela) e nunca a própria conta: a própria senha
+ * se troca nas preferências, confirmando a atual.
+ * Devolve só o que muda de fato; sem mudança, sem eventos.
+ */
+export function planUserUpdate(
+  actor: AccessActor,
+  user: StaffUser,
+  userProfiles: AccessProfile[],
+  changes: UserDataChanges,
+  now: Date,
+) {
+  assertNotSelf(actor, user);
+  assertHolds(actor, USERS_MANAGE);
+  assertAuthority(actor, 'assign', ...userProfiles);
+
+  const name =
+    changes.name !== undefined && changes.name !== user.name
+      ? changes.name
+      : undefined;
+  const email =
+    changes.email !== undefined && changes.email !== user.email
+      ? changes.email
+      : undefined;
+
+  const data: Record<string, unknown> = {};
+  if (name !== undefined) data.name = { from: user.name, to: name };
+  if (email !== undefined) data.email = { from: user.email, to: email };
+
+  const events: AccessEvent[] = [];
+  if (Object.keys(data).length > 0) {
+    events.push(
+      event(
+        AccessEventType.STAFF_USER_UPDATED,
+        actor,
+        'staff_user',
+        user.id,
+        data,
+        now,
+      ),
+    );
+  }
+  if (changes.passwordReset) {
+    events.push(
+      event(
+        AccessEventType.STAFF_USER_PASSWORD_RESET,
+        actor,
+        'staff_user',
+        user.id,
+        { sessionsRevoked: true },
+        now,
+      ),
+    );
+  }
+  return { name, email, events };
 }
 
 /** Sem eventos quando o status já é o pedido (operação idempotente). */

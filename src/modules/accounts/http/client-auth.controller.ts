@@ -17,6 +17,7 @@ import type { ClientPrincipal } from '../domain/principal.js';
 import { ClientArea, CurrentClient, ReqMeta } from './access-policy.js';
 import { AuthRateLimit } from './auth-rate-limit.js';
 import {
+  ChangePasswordDto,
   ClientProfileDto,
   ClientSessionDto,
   LoginDto,
@@ -68,5 +69,25 @@ export class ClientAuthController {
   @ApiOkResponse({ type: ClientProfileDto })
   me(@CurrentClient() principal: ClientPrincipal): ClientProfileDto {
     return clientProfileOf(principal);
+  }
+
+  /**
+   * O cliente troca a própria senha. Exige a senha atual; erros contam para o bloqueio,
+   * como no login. A sessão do `refreshToken` enviado continua aberta.
+   */
+  @ClientArea()
+  @AuthRateLimit()
+  @Post('password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiNoContentResponse()
+  async changePassword(
+    @CurrentClient() principal: ClientPrincipal,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    await this.auth.changePassword(principal.id, {
+      currentPassword: dto.currentPassword,
+      newPassword: dto.newPassword,
+      currentRefreshToken: dto.refreshToken,
+    });
   }
 }

@@ -31,10 +31,13 @@ import { ProbeController } from './probe.controller.js';
  * sistema), trocando só a persistência por memória e o relógio por um controlável.
  */
 export async function createTestApp() {
-  const staff = new InMemoryStaffDirectory();
-  const clientAccounts = new InMemoryAccountStore<ClientAccount>();
   const staffTokens = new InMemoryRefreshTokenStore<StaffTokenScope>();
   const clientTokens = new InMemoryRefreshTokenStore<ClientTokenScope>();
+  const staff = new InMemoryStaffDirectory(staffTokens);
+  const clientAccounts = new InMemoryAccountStore<ClientAccount>({
+    tokens: clientTokens,
+    audit: staff,
+  });
   const clock = new FakeClock();
 
   const moduleRef = await Test.createTestingModule({

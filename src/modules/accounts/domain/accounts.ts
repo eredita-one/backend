@@ -1,3 +1,4 @@
+import type { AccessEvent } from './access/access-events.js';
 import { STAFF_APPS, type StaffApp } from './apps.js';
 import type { Permission } from './permissions.js';
 
@@ -43,7 +44,21 @@ export interface AccountStore<T extends Account> {
   lock(id: string, until: Date): Promise<void>;
   /** Zera as falhas, remove o bloqueio e grava a data do login. */
   recordSuccessfulLogin(id: string, at: Date): Promise<void>;
+  /**
+   * A própria pessoa trocou a senha. Numa transação só: grava o hash, tira o bloqueio,
+   * encerra as outras sessões (todas menos a família `keepSessionId`) e grava o evento.
+   */
+  changePassword(change: PasswordChange): Promise<void>;
 }
+
+export type PasswordChange = {
+  accountId: string;
+  passwordHash: string;
+  at: Date;
+  /** Família do refresh token da sessão atual, que continua aberta. */
+  keepSessionId: string | null;
+  event: AccessEvent;
+};
 
 export const STAFF_ACCOUNTS = Symbol('STAFF_ACCOUNTS');
 export const CLIENT_ACCOUNTS = Symbol('CLIENT_ACCOUNTS');

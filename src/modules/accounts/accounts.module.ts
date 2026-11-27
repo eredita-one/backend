@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import type { Env } from '../../config/env.js';
 import { AccessManagementService } from './application/access-management.service.js';
 import { ClientAuthService } from './application/client-auth.service.js';
+import { OwnPasswordService } from './application/own-password.service.js';
 import { SessionService } from './application/session.service.js';
 import { StaffAuthService } from './application/staff-auth.service.js';
 import { SystemProfileSync } from './application/system-profile.sync.js';
@@ -89,6 +90,7 @@ export function authConfigFromEnv(
     PasswordAuthenticator,
     AccessTokenService,
     SessionService,
+    OwnPasswordService,
     StaffAuthService,
     ClientAuthService,
     AccessManagementService,

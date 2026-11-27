@@ -63,6 +63,28 @@ export const AuthErrors = {
       'Invalid or expired refresh token',
     ),
 
+  currentPasswordInvalid: () =>
+    new AppException(
+      ErrorCode.AUTH_CURRENT_PASSWORD_INVALID,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      'Current password does not match',
+    ),
+
+  passwordWeak: (minLength: number, maxLength: number) =>
+    new AppException(
+      ErrorCode.AUTH_PASSWORD_WEAK,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      `Password must have between ${minLength} and ${maxLength} characters`,
+      { minLength, maxLength },
+    ),
+
+  passwordUnchanged: () =>
+    new AppException(
+      ErrorCode.AUTH_PASSWORD_UNCHANGED,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      'New password must differ from the current one',
+    ),
+
   accessPolicyMissing: () =>
     new AppException(
       ErrorCode.AUTH_ACCESS_POLICY_MISSING,

@@ -1,6 +1,11 @@
 import { GENERAL_ADMIN_PROFILE_ID } from '../../src/modules/accounts/domain/access/access-profile.js';
+import { hashPassword } from '../../src/modules/accounts/domain/password-hashing.js';
 import { permissionsOfApp } from '../../src/modules/accounts/domain/permissions.js';
-import { createIntegrationApp, type IntegrationApp } from './support.js';
+import {
+  createIntegrationApp,
+  type IntegrationApp,
+  PASSWORD,
+} from './support.js';
 
 /**
  * Integração com Postgres real: cobre o que os e2e em memória não alcançam (consultas
@@ -203,6 +208,231 @@ describe('Contas com Postgres real', () => {
           }),
         ).toBe(1);
       }
+    });
+  });
+
+  it('auditoria paginada no banco: total, busca, período e páginas sem repetir', async () => {
+    const admin = await t.createStaff('admin@int.test', [
+      GENERAL_ADMIN_PROFILE_ID,
+    ]);
+    const { accessToken } = await t.login('admin@int.test', 'ADMIN');
+    const client = await t.prisma.clientAccount.create({
+      data: { email: 'cliente.busca@int.test', name: 'Cliente Buscável' },
+    });
+    await t.prisma.accessAuditLog.deleteMany({});
+
+    // 12 eventos no MESMO instante (o desempate pelo id evita repetir/pular entre páginas),
+    // mais 1 sobre o cliente, em outro dia.
+    const sameInstant = new Date('2026-11-10T12:00:00Z');
+    await t.prisma.accessAuditLog.createMany({
+      data: [
+        ...Array.from({ length: 12 }, (_, i) => ({
+          type: 'AccessProfileGranted',
+          actorId: admin.id,
+          subjectType: 'staff_user',
+          subjectId: admin.id,
+          data: { n: i },
+          occurredAt: sameInstant,
+        })),
+        {
+          type: 'PasswordChanged',
+          actorId: client.id,
+          subjectType: 'client_account',
+          subjectId: client.id,
+          data: {},
+          occurredAt: new Date('2026-11-20T09:00:00Z'),
+        },
+      ],
+    });
+    const get = (query: string) =>
+      t
+        .http()
+        .get(`/admin/access-audit${query}`)
+        .set(bearer(accessToken))
+        .expect(200)
+        .then((res) => res.body as { total: number; items: { id: string }[] });
+
+    const pages = await Promise.all(
+      [1, 2, 3].map((page) => get(`?pageSize=5&page=${page}`)),
+    );
+    const ids = pages.flatMap((p) => p.items.map((item) => item.id));
+    expect(pages[0]!.total).toBe(13);
+    expect(ids).toHaveLength(13);
+    expect(new Set(ids).size).toBe(13);
+
+    // Busca sem diferenciar maiúsculas, inclusive em contas de cliente.
+    expect((await get('?search=BUSCÁVEL')).total).toBe(1);
+    expect((await get('?search=admin@INT')).total).toBe(12);
+    // Período em dias UTC, `to` inclusivo.
+    expect((await get('?from=2026-11-20&to=2026-11-20')).total).toBe(1);
+    expect((await get('?to=2026-11-10')).total).toBe(12);
+  });
+
+  describe('dados e senha', () => {
+    const NEW_PASSWORD = 'Senha-Nova-Integracao-2026';
+
+    it('admin edita e define a senha: tudo na mesma transação, sessões revogadas no banco', async () => {
+      await t.createStaff('admin@int.test', [GENERAL_ADMIN_PROFILE_ID]);
+      const target = await t.createStaff('alvo@int.test', []);
+      await t.prisma.user.update({
+        where: { id: target.id },
+        data: {
+          failedLoginCount: 3,
+          lockedUntil: new Date(Date.now() + 60_000),
+        },
+      });
+      await t.prisma.userRefreshToken.create({
+        data: {
+          userId: target.id,
+          app: 'ADMIN',
+          familyId: '00000000-0000-4000-8000-000000000001',
+          tokenHash: 'a'.repeat(64),
+          expiresAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      const { accessToken } = await t.login('admin@int.test', 'ADMIN');
+
+      // E-mail de outra pessoa: recusado antes de gravar qualquer coisa.
+      const taken = await t
+        .http()
+        .patch(`/admin/staff-users/${target.id}`)
+        .set(bearer(accessToken))
+        .send({ name: 'Não grava', email: 'ADMIN@int.test' })
+        .expect(409);
+      expect(taken.body.code).toBe('STAFF_USER_EMAIL_TAKEN');
+      expect(
+        await t.prisma.accessAuditLog.count({
+          where: { subjectId: target.id },
+        }),
+      ).toBe(0);
+
+      await t
+        .http()
+        .patch(`/admin/staff-users/${target.id}`)
+        .set(bearer(accessToken))
+        .send({
+          name: 'Alvo Novo',
+          email: 'Alvo.Novo@int.test',
+          password: NEW_PASSWORD,
+        })
+        .expect(200);
+
+      const row = await t.prisma.user.findUniqueOrThrow({
+        where: { id: target.id },
+      });
+      expect(row).toMatchObject({
+        name: 'Alvo Novo',
+        email: 'alvo.novo@int.test',
+        failedLoginCount: 0,
+        lockedUntil: null,
+      });
+      expect(row.passwordHash).not.toBe(target.passwordHash);
+      expect(
+        await t.prisma.userRefreshToken.count({
+          where: { userId: target.id, revokedAt: null },
+        }),
+      ).toBe(0);
+      const events = await t.prisma.accessAuditLog.findMany({
+        where: { subjectId: target.id },
+        orderBy: { type: 'asc' },
+      });
+      expect(events.map((e) => e.type)).toEqual([
+        'StaffUserPasswordReset',
+        'StaffUserUpdated',
+      ]);
+      await t
+        .http()
+        .post('/auth/staff/login')
+        .send({
+          email: 'alvo.novo@int.test',
+          password: NEW_PASSWORD,
+          app: 'ADMIN',
+        })
+        .expect(403); // senha certa; sem perfil do admin, o app é recusado
+    });
+
+    it('troca da própria senha: mantém a sessão atual e revoga as outras no banco', async () => {
+      const user = await t.createStaff('pessoa@int.test', [
+        GENERAL_ADMIN_PROFILE_ID,
+      ]);
+      const current = await t.login('pessoa@int.test', 'ADMIN');
+      const other = await t.login('pessoa@int.test', 'ADMIN');
+
+      await t
+        .http()
+        .post('/auth/staff/password')
+        .set(bearer(current.accessToken))
+        .send({
+          currentPassword: PASSWORD,
+          newPassword: NEW_PASSWORD,
+          refreshToken: current.refreshToken,
+        })
+        .expect(204);
+
+      const active = await t.prisma.userRefreshToken.findMany({
+        where: { userId: user.id, revokedAt: null },
+      });
+      expect(active).toHaveLength(1);
+      await t
+        .http()
+        .post('/auth/staff/refresh')
+        .send({ refreshToken: current.refreshToken })
+        .expect(200);
+      await t
+        .http()
+        .post('/auth/staff/refresh')
+        .send({ refreshToken: other.refreshToken })
+        .expect(401);
+      expect(
+        await t.prisma.accessAuditLog.findFirst({
+          where: { type: 'PasswordChanged', subjectId: user.id },
+        }),
+      ).toMatchObject({ actorId: user.id, subjectType: 'staff_user' });
+    });
+
+    it('cliente troca a própria senha nas tabelas do cliente', async () => {
+      const client = await t.prisma.clientAccount.create({
+        data: {
+          email: 'cliente@int.test',
+          name: 'Cliente',
+          passwordHash: await hashPassword(PASSWORD),
+        },
+      });
+      const login = () =>
+        t
+          .http()
+          .post('/auth/client/login')
+          .send({ email: 'cliente@int.test', password: PASSWORD })
+          .expect(200);
+      const current = (await login()).body;
+      await login();
+
+      await t
+        .http()
+        .post('/auth/client/password')
+        .set(bearer(current.accessToken))
+        .send({
+          currentPassword: PASSWORD,
+          newPassword: NEW_PASSWORD,
+          refreshToken: current.refreshToken,
+        })
+        .expect(204);
+
+      expect(
+        await t.prisma.clientRefreshToken.count({
+          where: { clientAccountId: client.id, revokedAt: null },
+        }),
+      ).toBe(1);
+      await t
+        .http()
+        .post('/auth/client/login')
+        .send({ email: 'cliente@int.test', password: NEW_PASSWORD })
+        .expect(200);
+      expect(
+        await t.prisma.accessAuditLog.count({
+          where: { type: 'PasswordChanged', subjectType: 'client_account' },
+        }),
+      ).toBe(1);
     });
   });
 

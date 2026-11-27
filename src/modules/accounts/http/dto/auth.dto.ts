@@ -10,6 +10,10 @@ import {
   MaxLength,
 } from 'class-validator';
 import { STAFF_APPS, type StaffApp } from '../../domain/apps.js';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from '../../domain/password-policy.js';
 
 /** E-mail colado com espaço ou em maiúsculas ainda deve entrar. */
 export const normalizeEmailInput = ({ value }: { value: unknown }) =>
@@ -53,6 +57,29 @@ export class RefreshTokenDto {
   @IsString()
   @Length(32, 128)
   refreshToken!: string;
+}
+
+export class ChangePasswordDto {
+  @ApiProperty()
+  @IsString()
+  @Length(1, 256)
+  currentPassword!: string;
+
+  @ApiProperty({
+    description: `De ${PASSWORD_MIN_LENGTH} a ${PASSWORD_MAX_LENGTH} caracteres, diferente da atual.`,
+  })
+  @IsString()
+  @MaxLength(256)
+  newPassword!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Refresh token da sessão atual: ela continua aberta e as outras são encerradas.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(32, 128)
+  refreshToken?: string;
 }
 
 // ─── Saída ────────────────────────────────────────────────────────────────────

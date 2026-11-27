@@ -16,6 +16,7 @@ import type {
   Account,
   AccountStatus,
   AccountStore,
+  PasswordChange,
   StaffAccess,
   StaffAccount,
 } from '../../src/modules/accounts/domain/accounts.js';
@@ -29,6 +30,7 @@ import type {
   NewRefreshToken,
   RefreshTokenRecord,
   RefreshTokenStore,
+  StaffTokenScope,
 } from '../../src/modules/accounts/domain/refresh-tokens.js';
 
 /** Contas de cliente em memória. Devolve cópias, como um banco faria. */
@@ -37,6 +39,14 @@ export class InMemoryAccountStore<
 > implements AccountStore<T> {
   private readonly accounts = new Map<string, T>();
   readonly lastLoginAt = new Map<string, Date>();
+
+  /** Sessões e auditoria que a troca de senha atualiza junto, como a transação do banco. */
+  constructor(
+    private readonly deps: {
+      tokens?: InMemoryRefreshTokenStore<object>;
+      audit?: AuditTrail;
+    } = {},
+  ) {}
 
   add(account: T): T {
     this.accounts.set(account.id, structuredClone(account));
@@ -74,6 +84,20 @@ export class InMemoryAccountStore<
   async recordSuccessfulLogin(id: string, at: Date) {
     Object.assign(this.require(id), { failedLoginCount: 0, lockedUntil: null });
     this.lastLoginAt.set(id, at);
+  }
+
+  async changePassword(change: PasswordChange) {
+    Object.assign(this.require(change.accountId), {
+      passwordHash: change.passwordHash,
+      failedLoginCount: 0,
+      lockedUntil: null,
+    });
+    this.deps.tokens?.revokeSubject(
+      change.accountId,
+      change.at,
+      change.keepSessionId,
+    );
+    await this.deps.audit?.append([change.event]);
   }
 
   private require(id: string): T {
@@ -114,6 +138,11 @@ export class InMemoryStaffDirectory
   readonly assignments: Assignment[] = [];
   readonly events: RecordedAccessEvent[] = [];
   private queue: Promise<unknown> = Promise.resolve();
+
+  /** `tokens`: sessões que a troca de senha encerra, como a transação do banco. */
+  constructor(
+    private readonly tokens?: InMemoryRefreshTokenStore<StaffTokenScope>,
+  ) {}
 
   // ─── Atalhos para montar cenários ────────────────────────────────────────────
 
@@ -209,6 +238,20 @@ export class InMemoryStaffDirectory
       lockedUntil: null,
       lastLoginAt: at,
     });
+  }
+
+  async changePassword(change: PasswordChange) {
+    Object.assign(this.requireUser(change.accountId), {
+      passwordHash: change.passwordHash,
+      failedLoginCount: 0,
+      lockedUntil: null,
+    });
+    this.tokens?.revokeSubject(
+      change.accountId,
+      change.at,
+      change.keepSessionId,
+    );
+    await this.append([change.event]);
   }
 
   private toAccount(row: StaffRow): StaffAccount {
@@ -309,13 +352,28 @@ export class InMemoryStaffDirectory
     },
     listUsers: async () =>
       [...this.users.values()].map((row) => this.toStaffUser(row)),
-    isEmailTaken: async (email) =>
-      [...this.users.values()].some((u) => u.email === email),
+    isEmailTaken: async (email, exceptId) =>
+      [...this.users.values()].some(
+        (u) => u.email === email && u.id !== exceptId,
+      ),
     insertUser: async ({ id, email, name }) => {
       this.addUser(
         { id, email, name, passwordHash: null, status: 'ACTIVE' },
         [],
       );
+    },
+    updateUserData: async (userId, { name, email }) =>
+      this.update(userId, {
+        ...(name === undefined ? {} : { name }),
+        ...(email === undefined ? {} : { email }),
+      }),
+    resetUserPassword: async (userId, passwordHash, at) => {
+      this.update(userId, {
+        passwordHash,
+        failedLoginCount: 0,
+        lockedUntil: null,
+      });
+      this.tokens?.revokeSubject(userId, at);
     },
     grantProfile: async (userId, profileId, grantedBy) => {
       if (!this.profileIdsOf(userId).includes(profileId)) {
@@ -343,11 +401,39 @@ export class InMemoryStaffDirectory
     );
   }
 
-  async list({ limit, subjectId }: AuditQuery) {
-    return this.events
-      .filter((e) => !subjectId || e.subjectId === subjectId)
-      .toReversed()
-      .slice(0, limit);
+  /** Mesmas regras do adapter Prisma (a busca aqui só conhece a equipe e os perfis). */
+  async list(query: AuditQuery) {
+    const term = query.search?.toLowerCase();
+    const searchIds = term
+      ? new Set([
+          ...[...this.users.values()]
+            .filter((u) => `${u.name} ${u.email}`.toLowerCase().includes(term))
+            .map((u) => u.id),
+          ...[...this.profiles.values()]
+            .filter((p) => p.name.toLowerCase().includes(term))
+            .map((p) => p.id),
+        ])
+      : null;
+    const found = this.events.filter(
+      (e) =>
+        (!query.subjectId || e.subjectId === query.subjectId) &&
+        (!query.personId ||
+          e.actorId === query.personId ||
+          e.subjectId === query.personId) &&
+        (!query.type || e.type === query.type) &&
+        (!query.from || e.occurredAt >= query.from) &&
+        (!query.until || e.occurredAt < query.until) &&
+        (!searchIds ||
+          searchIds.has(e.subjectId) ||
+          (e.actorId !== null && searchIds.has(e.actorId))),
+    );
+    // Gravados em ordem: a lista já está do mais antigo para o mais novo.
+    const ordered = query.order === 'desc' ? found.toReversed() : found;
+    const start = (query.page - 1) * query.pageSize;
+    return {
+      items: ordered.slice(start, start + query.pageSize),
+      total: found.length,
+    };
   }
 
   eventsOf(type: string) {
@@ -405,6 +491,23 @@ export class InMemoryRefreshTokenStore<
 
   activeInFamily(familyId: string) {
     return this.tokens.filter((t) => t.familyId === familyId && !t.revokedAt);
+  }
+
+  /** Revoga as sessões ativas da conta, menos a família `exceptFamilyId`. */
+  revokeSubject(subjectId: string, at: Date, exceptFamilyId?: string | null) {
+    for (const token of this.tokens) {
+      if (
+        token.subjectId === subjectId &&
+        !token.revokedAt &&
+        token.familyId !== exceptFamilyId
+      ) {
+        token.revokedAt = at;
+      }
+    }
+  }
+
+  activeOf(subjectId: string) {
+    return this.tokens.filter((t) => t.subjectId === subjectId && !t.revokedAt);
   }
 }
 

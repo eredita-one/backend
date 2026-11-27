@@ -34,7 +34,8 @@ const MINUTE_MS = 60_000;
         throttlers: [
           // Teto geral por IP, para qualquer rota.
           { name: 'default', ttl: MINUTE_MS, limit: 300 },
-          // Teto apertado só nas rotas marcadas com @AuthRateLimit() (login, refresh, logout).
+          // Teto apertado só nas rotas marcadas com @AuthRateLimit() (login, refresh,
+          // logout e troca da própria senha).
           {
             name: 'auth',
             ttl: MINUTE_MS,
